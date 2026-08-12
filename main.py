@@ -4,9 +4,12 @@ import subprocess
 import sys
 import tkinter as tk
 from tkinter import messagebox
+from urllib.request import urlopen, Request
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-GAMES_FILE = os.path.join(BASE_DIR, "games.json")
+INSTALLED_DIR = os.path.join(BASE_DIR, "installed_games")
+CATALOG_URL = "https://raw.githubusercontent.com/thomas147329/GameHubfiles/main/games.json"
+GAMES_BASE_URL = "https://raw.githubusercontent.com/thomas147329/GameHubfiles/main/"
 
 BG = "#171a21"
 PANEL = "#20242c"
@@ -23,6 +26,7 @@ class GameHub(tk.Tk):
         self.geometry("1100x700")
         self.minsize(850, 550)
         self.configure(bg=BG)
+        os.makedirs(INSTALLED_DIR, exist_ok=True)
         self.games = self.load_games()
         self.search_var = tk.StringVar()
         self.build_ui()
@@ -30,9 +34,12 @@ class GameHub(tk.Tk):
 
     def load_games(self):
         try:
-            with open(GAMES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
+            request = Request(CATALOG_URL, headers={"User-Agent": "GameHub"})
+            with urlopen(request, timeout=10) as response:
+                data = response.read().decode("utf-8")
+            return json.loads(data)
+        except Exception as exc:
+            messagebox.showwarning("GameHub", f"Could not download the game catalog.\n\n{exc}")
             return []
 
     def build_ui(self):
@@ -47,6 +54,10 @@ class GameHub(tk.Tk):
             tk.Button(top, text=name, command=command, bg=PANEL, fg=MUTED,
                       activebackground=PANEL, activeforeground=TEXT,
                       bd=0, font=("Helvetica", 11, "bold")).pack(side="left", padx=12)
+
+        tk.Button(top, text="REFRESH", command=self.refresh_catalog, bg=PANEL, fg=MUTED,
+                  activebackground=PANEL, activeforeground=TEXT, bd=0,
+                  font=("Helvetica", 11, "bold")).pack(side="left", padx=12)
 
         search = tk.Entry(top, textvariable=self.search_var, width=28,
                           bg="#111318", fg=TEXT, insertbackground=TEXT,
@@ -65,10 +76,14 @@ class GameHub(tk.Tk):
         tk.Label(self.content, text=text, bg=BG, fg=TEXT,
                  font=("Helvetica", 28, "bold")).pack(anchor="w", pady=(0, 20))
 
+    def refresh_catalog(self):
+        self.games = self.load_games()
+        self.show_home()
+
     def show_home(self):
         self.clear()
         self.title("Welcome to GameHub")
-        tk.Label(self.content, text="Your games. One place.", bg=BG, fg=MUTED,
+        tk.Label(self.content, text="Games are downloaded from GameHubfiles.", bg=BG, fg=MUTED,
                  font=("Helvetica", 14)).pack(anchor="w", pady=(0, 25))
         self.game_grid(self.games)
 
@@ -92,7 +107,9 @@ class GameHub(tk.Tk):
                      font=("Helvetica", 16, "bold")).pack()
             tk.Label(card, text=game.get("description", ""), bg=CARD, fg=MUTED,
                      wraplength=205, font=("Helvetica", 10)).pack(pady=6)
-            tk.Button(card, text="PLAY", command=lambda g=game: self.launch_game(g),
+            installed = os.path.isfile(self.local_path(game))
+            tk.Button(card, text="PLAY" if installed else "DOWNLOAD",
+                      command=lambda g=game: self.launch_game(g),
                       bg=ACCENT, fg="#101820", activebackground="#8bd4ff",
                       bd=0, padx=18, pady=6, font=("Helvetica", 10, "bold")).pack(pady=7)
 
@@ -103,15 +120,31 @@ class GameHub(tk.Tk):
             tk.Label(grid, text="No games found.", bg=BG, fg=MUTED,
                      font=("Helvetica", 14)).grid(row=0, column=0, pady=40)
 
+    def local_path(self, game):
+        return os.path.join(INSTALLED_DIR, os.path.basename(game.get("file", "game.py")))
+
+    def download_game(self, game):
+        remote_file = game.get("file", "")
+        if not remote_file:
+            raise ValueError("Game has no download file configured.")
+        url = GAMES_BASE_URL + remote_file
+        path = self.local_path(game)
+        request = Request(url, headers={"User-Agent": "GameHub"})
+        with urlopen(request, timeout=30) as response:
+            data = response.read()
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
     def launch_game(self, game):
-        path = os.path.join(BASE_DIR, game.get("file", ""))
-        if not os.path.isfile(path):
-            messagebox.showerror("GameHub", f"Game file not found:\n{path}")
-            return
+        path = self.local_path(game)
         try:
-            subprocess.Popen([sys.executable, path], cwd=BASE_DIR)
-        except OSError as exc:
-            messagebox.showerror("GameHub", str(exc))
+            if not os.path.isfile(path):
+                path = self.download_game(game)
+                messagebox.showinfo("GameHub", f"Downloaded {game.get('name', 'game')}!")
+            subprocess.Popen([sys.executable, path], cwd=INSTALLED_DIR)
+        except Exception as exc:
+            messagebox.showerror("GameHub", f"Could not download or start the game.\n\n{exc}")
 
 
 if __name__ == "__main__":
