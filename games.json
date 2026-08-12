@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Space Dodge",
+    "description": "Dodge the falling asteroids.",
+    "file": "games/space_dodge.py"
+  },
+  {
+    "name": "Number Guess",
+    "description": "Guess the secret number.",
+    "file": "games/number_guess.py"
+  }
+]
