@@ -6,6 +6,7 @@ import sys
 import tkinter as tk
 from tkinter import messagebox
 from urllib.request import urlopen, Request
+from urllib.parse import quote
 import ssl
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,11 @@ def make_ssl_context():
 
 
 SSL_CONTEXT = make_ssl_context()
+
+
+def github_quote_path(path):
+    """URL-encode a GitHub repository path while preserving path separators."""
+    return quote(path.strip("/"), safe="/")
 
 
 def download_bytes(url, timeout=30):
@@ -62,7 +68,7 @@ def download_bytes(url, timeout=30):
 
 def github_directory_files(repo_path):
     """Return every file under a GameHubfiles directory recursively."""
-    api_url = GITHUB_API_BASE + repo_path.strip("/")
+    api_url = GITHUB_API_BASE + github_quote_path(repo_path)
     data = json.loads(download_bytes(api_url, timeout=30).decode("utf-8"))
 
     if not isinstance(data, list):
@@ -223,16 +229,14 @@ class GameHub(tk.Tk):
         if not remote_file:
             raise ValueError("Game has no download file configured.")
 
-        # Download the main Python file.
-        url = GAMES_BASE_URL + remote_file
+        # URL-encode the repository path so spaces and special characters work.
+        url = GAMES_BASE_URL + github_quote_path(remote_file)
         path = self.local_path(game)
         data = download_bytes(url, timeout=30)
         with open(path, "wb") as file:
             file.write(data)
 
         # Optional asset folders are listed in games.json as repo-relative paths.
-        # Example: "asset_dirs": ["games/Assets"] downloads the whole Assets tree
-        # into installed_games/Assets, preserving Models/SFX/Textures subfolders.
         for asset_dir in game.get("asset_dirs", []):
             asset_dir = asset_dir.strip("/")
             if not asset_dir:
@@ -250,7 +254,8 @@ class GameHub(tk.Tk):
 
                 target = os.path.join(target_root, relative)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
-                asset_url = GAMES_BASE_URL + repo_file
+                # URL-encode the complete repository path before requesting it.
+                asset_url = GAMES_BASE_URL + github_quote_path(repo_file)
                 asset_data = download_bytes(asset_url, timeout=60)
                 with open(target, "wb") as file:
                     file.write(asset_data)
