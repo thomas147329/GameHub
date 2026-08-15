@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tkinter as tk
@@ -11,6 +12,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INSTALLED_DIR = os.path.join(BASE_DIR, "installed_games")
 CATALOG_URL = "https://raw.githubusercontent.com/thomas147329/GameHubfiles/main/games.json"
 GAMES_BASE_URL = "https://raw.githubusercontent.com/thomas147329/GameHubfiles/main/"
+GITHUB_API_BASE = "https://api.github.com/repos/thomas147329/GameHubfiles/contents/"
 
 BG = "#171a21"
 PANEL = "#20242c"
@@ -33,7 +35,7 @@ SSL_CONTEXT = make_ssl_context()
 
 
 def download_bytes(url, timeout=30):
-    request = Request(url, headers={"User-Agent": "GameHub/1.0"})
+    request = Request(url, headers={"User-Agent": "GameHub/1.1"})
 
     try:
         with urlopen(request, timeout=timeout, context=SSL_CONTEXT) as response:
@@ -43,7 +45,7 @@ def download_bytes(url, timeout=30):
             result = subprocess.run(
                 [
                     "curl", "--fail", "--silent", "--show-error", "--location",
-                    "--max-time", str(timeout), "--user-agent", "GameHub/1.0", url
+                    "--max-time", str(timeout), "--user-agent", "GameHub/1.1", url
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -56,6 +58,25 @@ def download_bytes(url, timeout=30):
                 "Python HTTPS error:\n" + str(python_error) +
                 "\n\nSystem curl error:\n" + str(curl_error)
             )
+
+
+def github_directory_files(repo_path):
+    """Return every file under a GameHubfiles directory recursively."""
+    api_url = GITHUB_API_BASE + repo_path.strip("/")
+    data = json.loads(download_bytes(api_url, timeout=30).decode("utf-8"))
+
+    if not isinstance(data, list):
+        raise RuntimeError("GitHub did not return a directory listing for " + repo_path)
+
+    files = []
+    for item in data:
+        item_type = item.get("type")
+        item_path = item.get("path", "")
+        if item_type == "file":
+            files.append(item_path)
+        elif item_type == "dir":
+            files.extend(github_directory_files(item_path))
+    return files
 
 
 class GameHub(tk.Tk):
@@ -169,42 +190,21 @@ class GameHub(tk.Tk):
                 button_frame.pack(pady=7)
 
                 tk.Button(
-                    button_frame,
-                    text="PLAY",
-                    command=lambda g=game: self.launch_game(g),
-                    bg=ACCENT,
-                    fg="#101820",
-                    activebackground="#8bd4ff",
-                    bd=0,
-                    padx=16,
-                    pady=6,
-                    font=("Helvetica", 10, "bold")
+                    button_frame, text="PLAY", command=lambda g=game: self.launch_game(g),
+                    bg=ACCENT, fg="#101820", activebackground="#8bd4ff", bd=0,
+                    padx=16, pady=6, font=("Helvetica", 10, "bold")
                 ).pack(side="left", padx=3)
 
                 tk.Button(
-                    button_frame,
-                    text="UNINSTALL",
-                    command=lambda g=game: self.uninstall_game(g),
-                    bg=DANGER,
-                    fg=TEXT,
-                    activebackground="#ff7777",
-                    bd=0,
-                    padx=10,
-                    pady=6,
-                    font=("Helvetica", 10, "bold")
+                    button_frame, text="UNINSTALL", command=lambda g=game: self.uninstall_game(g),
+                    bg=DANGER, fg=TEXT, activebackground="#ff7777", bd=0,
+                    padx=10, pady=6, font=("Helvetica", 10, "bold")
                 ).pack(side="left", padx=3)
             else:
                 tk.Button(
-                    card,
-                    text="DOWNLOAD",
-                    command=lambda g=game: self.launch_game(g),
-                    bg=ACCENT,
-                    fg="#101820",
-                    activebackground="#8bd4ff",
-                    bd=0,
-                    padx=18,
-                    pady=6,
-                    font=("Helvetica", 10, "bold")
+                    card, text="DOWNLOAD", command=lambda g=game: self.launch_game(g),
+                    bg=ACCENT, fg="#101820", activebackground="#8bd4ff", bd=0,
+                    padx=18, pady=6, font=("Helvetica", 10, "bold")
                 ).pack(pady=7)
 
         for column in range(3):
@@ -223,12 +223,37 @@ class GameHub(tk.Tk):
         if not remote_file:
             raise ValueError("Game has no download file configured.")
 
+        # Download the main Python file.
         url = GAMES_BASE_URL + remote_file
         path = self.local_path(game)
         data = download_bytes(url, timeout=30)
-
         with open(path, "wb") as file:
             file.write(data)
+
+        # Optional asset folders are listed in games.json as repo-relative paths.
+        # Example: "asset_dirs": ["games/Assets"] downloads the whole Assets tree
+        # into installed_games/Assets, preserving Models/SFX/Textures subfolders.
+        for asset_dir in game.get("asset_dirs", []):
+            asset_dir = asset_dir.strip("/")
+            if not asset_dir:
+                continue
+
+            repo_files = github_directory_files(asset_dir)
+            prefix = asset_dir.rsplit("/", 1)[0] + "/" if "/" in asset_dir else ""
+            target_root = os.path.join(INSTALLED_DIR, os.path.basename(asset_dir))
+
+            for repo_file in repo_files:
+                if prefix and not repo_file.startswith(prefix):
+                    relative = os.path.basename(repo_file)
+                else:
+                    relative = repo_file[len(asset_dir):].lstrip("/")
+
+                target = os.path.join(target_root, relative)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                asset_url = GAMES_BASE_URL + repo_file
+                asset_data = download_bytes(asset_url, timeout=60)
+                with open(target, "wb") as file:
+                    file.write(asset_data)
 
         return path
 
@@ -271,10 +296,15 @@ class GameHub(tk.Tk):
 
         try:
             os.remove(path)
-            messagebox.showinfo(
-                "GameHub",
-                name + " has been uninstalled."
-            )
+
+            # Remove asset folders belonging to this game.
+            for asset_dir in game.get("asset_dirs", []):
+                asset_name = os.path.basename(asset_dir.strip("/"))
+                asset_path = os.path.join(INSTALLED_DIR, asset_name)
+                if os.path.isdir(asset_path):
+                    shutil.rmtree(asset_path)
+
+            messagebox.showinfo("GameHub", name + " has been uninstalled.")
             self.show_home()
         except Exception as exc:
             messagebox.showerror(
